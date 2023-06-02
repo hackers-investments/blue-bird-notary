@@ -54,24 +54,23 @@ const createEventHandler = async (rpcUrl, contractAddr) => {
                 && db[toChain][strRecipientLockId]["recipientLockId"] === strLockId
                 && "recipient" in db[toChain][strRecipientLockId]
                 && db[toChain][strRecipientLockId]["recipient"] === db[fromChain][strLockId]["owner"]) {
-                console.log("MATCHED");
-                // make key for execute
-
                 const hash = await contract.hash(lockId, "EXECUTE");
-                console.log("lockId: ", strLockId);
-                console.log("HASH: " + hash);
-                console.log(typeof hash);
-                const signature = await signer.signMessage(hash);
-                console.log("SIGN: " + signature);
+                const signature = await signer.signMessage(ethers.getBytes(hash));
 
                 const r = signature.slice(0, 66);
                 const s = '0x' + signature.slice(66, 130);
                 const v = '0x' + signature.slice(130, 132);
-                console.log("R: " + r);
-                console.log("S: " + s);
-                console.log("V: " + v);
 
-                await contract.execute(lockId, hash, v, r, s);
+                if (!(fromChain in executeKeys)) {
+                    executeKeys[fromChain] = {};
+                }
+                executeKeys[fromChain][strLockId] = {};
+                executeKeys[fromChain][strLockId]['v'] = v;
+                executeKeys[fromChain][strLockId]['r'] = r;
+                executeKeys[fromChain][strLockId]['s'] = s;
+
+                console.log(executeKeys);
+                // await contract.execute(lockId, hash, v, r, s);
             }
         }
     });
