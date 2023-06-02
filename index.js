@@ -6,7 +6,8 @@ const ABI = [
     "event NewLock(address owner, uint256 lockId, uint256 toChain, address payToken, uint256 payTokenAmount, address buyToken, uint256 buyTokenAmount)",
     "event SetRecipient(uint256 lockId, address recipient, uint256 recipientLockId)",
     "event Executed(uint256 lockId)",
-    "event Cancel(uint256 lockId)",
+    "event Canceled(uint256 lockId)",
+    "event RequestCancel(uint256 lockId)",
     "function hash(uint256 lockId, string memory action) external view returns (bytes32)",
     "function execute(uint256 lockId, bytes32 digest, uint8 v, bytes32 r, bytes32 s) external"
 ];
@@ -69,50 +70,72 @@ const createEventHandler = async (rpcUrl, contractAddr) => {
                 executeKeys[fromChain][strLockId]['r'] = r;
                 executeKeys[fromChain][strLockId]['s'] = s;
 
+                if (!(toChain in executeKeys)) {
+                    executeKeys[toChain] = {};
+                }
+                executeKeys[toChain][strRecipientLockId] = {};
+                executeKeys[toChain][strRecipientLockId]['v'] = v;
+                executeKeys[toChain][strRecipientLockId]['r'] = r;
+                executeKeys[toChain][strRecipientLockId]['s'] = s;
+
+                // delete db[fromChain][strLockId];
+                // delete db[toChain][strRecipientLockId];
+                console.log("[ Execute Keys ]");
                 console.log(executeKeys);
-                // await contract.execute(lockId, hash, v, r, s);
             }
         }
     });
 
     contract.on("Executed", (lockId) => {
-        console.log("EXECUTED");
+        // const strLockId = lockId.toString();
 
-        const strLockId = lockId.toString();
-        const toChain = db[fromChain][strLockId]["toChain"];
-        const strRecipientLockId = db[fromChain][strLockId]["recipientLockId"];
-
-        if (!(fromChain in executeKeys)) {
-            executeKeys[fromChain] = {};
-        }
-        executeKeys[fromChain][strLockId] = "[KEY-FOR-EXECUTE]";
-
-        if (!(toChain in executeKeys)) {
-            executeKeys[toChain] = {};
-        }
-        executeKeys[toChain][strRecipientLockId] = "[KEY-FOR-EXECUTE]";
-
-        delete db[fromChain][strLockId];
-        delete db[toChain][strRecipientLockId];
+        // delete executeKeys[fromChain][strLockId];
     });
 
-    contract.on("Cancel", (lockId) => {
+    contract.on("RequestCancel", async (lockId) => {
         const strLockId = lockId.toString();
         const toChain = db[fromChain][strLockId]["toChain"];
         const strRecipientLockId = db[fromChain][strLockId]["recipientLockId"];
+
+        // 실행키가 이미 배포된 경우 취소키를 배포하지 않고 반환
+        if (fromChain in executeKeys && strLockId in executeKeys[fromChain]) {
+            return;
+        }
+
+        const hash = await contract.hash(lockId, "CANCEL");
+        const signature = await signer.signMessage(ethers.getBytes(hash));
+
+        const r = signature.slice(0, 66);
+        const s = '0x' + signature.slice(66, 130);
+        const v = '0x' + signature.slice(130, 132);
 
         if (!(fromChain in cancleKeys)) {
             cancleKeys[fromChain] = {};
         }
-        cancleKeys[fromChain][strLockId] = "[KEY-FOR-CANCLE]";
+        cancleKeys[fromChain][strLockId] = {};
+        cancleKeys[fromChain][strLockId]['v'] = v;
+        cancleKeys[fromChain][strLockId]['r'] = r;
+        cancleKeys[fromChain][strLockId]['s'] = s;
 
         if (!(toChain in cancleKeys)) {
             cancleKeys[toChain] = {};
         }
-        cancleKeys[toChain][strRecipientLockId] = "[KEY-FOR-CANCLE]";
+        cancleKeys[toChain][strRecipientLockId] = {};
+        cancleKeys[toChain][strRecipientLockId]['v'] = v;
+        cancleKeys[toChain][strRecipientLockId]['r'] = r;
+        cancleKeys[toChain][strRecipientLockId]['s'] = s;
 
-        delete db[fromChain][strLockId];
-        delete db[toChain][strRecipientLockId];
+        console.log("[ Cancel Keys ]");
+        console.log(cancleKeys);
+
+        // delete db[fromChain][strLockId];
+        // delete db[toChain][strRecipientLockId];
+    });
+
+    contract.on("Canceled", (lockId) => {
+        // const strLockId = lockId.toString();
+
+        // delete cancleKeys[fromChain][strLockId];
     });
 }
 
