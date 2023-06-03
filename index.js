@@ -25,6 +25,7 @@ const ABI = [
     "function recipients(uint256 lockId) public view returns (address recipient, uint256 recipientLockId)",
     "function isRequestCancel(uint256 lockId) public view returns (bool)",
     "function hash(uint256 lockId, string memory action) external view returns (bytes32)",
+    "function getLockInfo(uint256 lockId) public view returns (address, uint256, address, uint256, bool)",
 ];
 
 app.get('/requestCancel', async (req, res) => {
@@ -32,10 +33,11 @@ app.get('/requestCancel', async (req, res) => {
     const lockId = Number(req.query.lock_id);
 
     const provider = providers[chainId];
-    const contract = new ethers.Contract(contractAddresses[chainId], ABI, provider);
+    const fromChainContract = new ethers.Contract(contractAddresses[chainId], ABI, provider);
+    // 현재 체인에서 취소하려는 Lock에 대한 정보를 읽음
+    const [owner, toChainId, recipient, recipientLockId, isRequestCancel] = await fromChainContract.getLockInfo(lockId);
 
     // recipient를 지정했는지 확인함. recipient를 지정하지 않은 경우 바로 취소 가능.
-    const [recipient, recipientLockId] = await contract.recipients(lockId);
     if (recipient === ethers.ZeroAddress) {
         const response = {
             error: true,
@@ -46,7 +48,6 @@ app.get('/requestCancel', async (req, res) => {
     }
 
     // Lock에 대한 requestCancel() 호출 여부 검증
-    const isRequestCancel = await contract.isRequestCancel(lockId);
     if (isRequestCancel === false) {
         const response = {
             error: true,
@@ -56,20 +57,13 @@ app.get('/requestCancel', async (req, res) => {
         return;
     }
 
-    // 현재 위치한 체인에서 취소하려는 Lock에 대한 정보를 읽음
-    const [
-        owner, toChainId,
-        payToken, payTokenAmount,
-        buyToken, buyTokenAmount,
-        executed, cancelled
-    ] = await contract.locks(lockId);
-
     const toChainProvider = providers[Number(toChainId)];
     const toChainContract = new ethers.Contract(contractAddresses[Number(toChainId)], ABI, toChainProvider);
-    const [toChainRecipient, toChainRecipientLockId] = await toChainContract.recipients(Number(recipientLockId));
+    // 반대편 체인에서 취소하려는 Lock에 대한 정보를 읽음
+    const [, , , toChainRecipient, toChainRecipientLockId,] = await toChainContract.getLockInfo(Number(recipientLockId));
 
     // 상대방이 recipient를 지정하지 않았거나, recipient가 취소를 요청한 사용자가 아닌 경우에만 sign 발행
-    if (toChainRecipient === ethers.ZeroAddress || toChainRecipient !== owner) {
+    if (toChainRecipient === ethers.ZeroAddress || toChainRecipient !== owner || Number(toChainRecipientLockId) !== lockId) {
         const hash = await contract.hash(lockId, "CANCEL");
         const signature = await signer.signMessage(ethers.getBytes(hash));
 
@@ -99,10 +93,20 @@ app.get('/requestExecute', async (req, res) => {
     const lockId = Number(req.query.lock_id);
 
     const provider = providers[chainId];
-    const contract = new ethers.Contract(contractAddresses[chainId], ABI, provider);
+    const fromChainContract = new ethers.Contract(contractAddresses[chainId], ABI, provider);
+    // 현재 체인에서 취소하려는 Lock에 대한 정보를 읽음
+    const [owner, toChainId, recipient, recipientLockId, isRequestCancel] = await fromChainContract.getLockInfo(lockId);
+
+    if (isRequestCancel !== false) {
+        const response = {
+            error: true,
+            reason: "It's not executable because it's already cancelled"
+        };
+        res.json(response);
+        return;
+    }
 
     // recipient를 지정했는지 확인
-    const [recipient, recipientLockId] = await contract.recipients(lockId);
     if (recipient === ethers.ZeroAddress) {
         const response = {
             error: true,
@@ -112,27 +116,14 @@ app.get('/requestExecute', async (req, res) => {
         return;
     }
 
-    // 현재 위치한 체인에서 취소하려는 Lock에 대한 정보를 읽음
-    const [
-        owner, toChainId,
-        payToken, payTokenAmount,
-        buyToken, buyTokenAmount,
-        executed, cancelled
-    ] = await contract.locks(lockId);
-
     const toChainProvider = providers[Number(toChainId)];
     const toChainContract = new ethers.Contract(contractAddresses[Number(toChainId)], ABI, toChainProvider);
-    const [toChainRecipient, toChainRecipientLockId] = await toChainContract.recipients(Number(recipientLockId));
-
-    console.log(toChainRecipientLockId);
-    console.log(toChainRecipient);
-    console.log(owner);
+    const [, , , toChainRecipient, toChainRecipientLockId, toChainIsRequestCancel] = await toChainContract.getLockInfo(Number(recipientLockId));
 
     // 상대방도 나를 recipient로 지정했는지 확인
     if (toChainRecipient === owner) {
         // 상대방이 취소하기 위해 requestCancel()를 호출했는지 확인
-        const isRequestCancel = await toChainContract.isRequestCancel(toChainRecipientLockId);
-        if (isRequestCancel === true) {
+        if (toChainIsRequestCancel === true) {
             const response = {
                 error: true,
                 reason: "It's not executable because it's already cancelled"
