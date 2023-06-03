@@ -1,107 +1,75 @@
-const ethers = require("ethers");
-
 require("dotenv").config();
 
+const ethers = require("ethers");
+
+const express = require('express')
+const app = express()
+const port = 8080
+
+const contractAddresses = {
+    5: process.env.GOERLI_CONTRACT_ADDRESS,
+    137: process.env.POLYGON_CONTRACT_ADDRESS,
+}
+
+const providers = {
+    0: new ethers.JsonRpcProvider("https://mainnet.infura.io/v3/f95fcbaa5a2f42b580019e13527c4566"), // Ethereum mainnet
+    5: new ethers.JsonRpcProvider("https://goerli.infura.io/v3/f95fcbaa5a2f42b580019e13527c4566"), // Goerli testnet
+    137: new ethers.JsonRpcProvider("https://polygon-mumbai.infura.io/v3/f95fcbaa5a2f42b580019e13527c4566"), // Polygon mainnet
+};
+
+// personal_sign()을 호출하기 위한 signer, 네트워크는 어디에 연결하든 상관없음
+const signer = new ethers.Wallet(process.env.PRIVATE_KEY, providers[0]);
+
 const ABI = [
-    "event NewLock(address owner, uint256 lockId, uint256 toChain, address payToken, uint256 payTokenAmount, address buyToken, uint256 buyTokenAmount)",
-    "event SetRecipient(uint256 lockId, address recipient, uint256 recipientLockId)",
-    "event Executed(uint256 lockId)",
-    "event Canceled(uint256 lockId)",
-    "event RequestCancel(uint256 lockId)",
+    "function locks(uint256 lockId) public view returns (address owner, uint256 toChainId, address payToken, uint256 payTokenAmount, address buyToken, uint256 buyTokenAmount, bool executed, bool cancelled)",
+    "function recipients(uint256 lockId) public view returns (address recipient, uint256 recipientLockId)",
+    "function isRequestCancel(uint256 lockId) public view returns (bool)",
     "function hash(uint256 lockId, string memory action) external view returns (bytes32)",
-    "function execute(uint256 lockId, bytes32 digest, uint8 v, bytes32 r, bytes32 s) external"
 ];
 
-const db = {};
+app.get('/requestCancel', async (req, res) => {
+    const chainId = Number(req.query.chain_id)
+    const lockId = Number(req.query.lock_id);
 
-const cancleKeys = {};
-const executeKeys = {};
+    const provider = providers[chainId];
+    const contract = new ethers.Contract(contractAddresses[chainId], ABI, provider);
 
-const createEventHandler = async (rpcUrl, contractAddr) => {
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    const signer = new ethers.Wallet("0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6", provider);
-    const contract = new ethers.Contract(contractAddr, ABI, signer);
+    // recipient를 지정했는지 확인함. recipient를 지정하지 않은 경우 바로 취소 가능.
+    const [recipient, recipientLockId] = await contract.recipients(lockId);
+    if (recipient === ethers.ZeroAddress) {
+        const response = {
+            error: true,
+            reason: "No need notary sign"
+        };
+        res.json(response);
+        return;
+    }
 
-    const fromChain = ((await provider.getNetwork()).chainId).toString();
+    // Lock에 대한 requestCancel() 호출 여부 검증
+    const isRequestCancel = await contract.isRequestCancel(lockId);
+    if (isRequestCancel === false) {
+        const response = {
+            error: true,
+            reason: "Request cancel first"
+        };
+        res.json(response);
+        return;
+    }
 
-    contract.on("NewLock", (owner, lockId, toChain, payToken, payTokenAmount, buyToken, buyTokenAmount) => {
-        if (!(fromChain in db)) {
-            db[fromChain] = {};
-        }
+    // 현재 위치한 체인에서 취소하려는 Lock에 대한 정보를 읽음
+    const [
+        owner, toChainId,
+        payToken, payTokenAmount,
+        buyToken, buyTokenAmount,
+        executed, cancelled
+    ] = await contract.locks(lockId);
 
-        const strLockId = lockId.toString();
-        if (!(strLockId in db[fromChain])) {
-            db[fromChain][strLockId] = {};
-        }
+    const toChainProvider = providers[Number(toChainId)];
+    const toChainContract = new ethers.Contract(contractAddresses[Number(toChainId)], ABI, toChainProvider);
+    const [toChainRecipient, toChainRecipientLockId] = await toChainContract.recipients(Number(recipientLockId));
 
-        db[fromChain][strLockId]["owner"] = owner;
-        db[fromChain][strLockId]["toChain"] = toChain.toString();
-
-        console.log(`FromChain: ${fromChain}, LockId: ${lockId}`);
-        console.log(db[fromChain][strLockId]);
-    });
-
-    contract.on("SetRecipient", async (lockId, recipient, recipientLockId) => {
-        const strLockId = lockId.toString();
-        const strRecipientLockId = recipientLockId.toString();
-
-        db[fromChain][strLockId]["recipient"] = recipient;
-        db[fromChain][strLockId]["recipientLockId"] = strRecipientLockId;
-
-        // 대상 체인에서 현재 Lock을 대상으로 지정한 Token Locker가 있는지 확인
-        const toChain = db[fromChain][strLockId]["toChain"];
-        if (toChain in db && strRecipientLockId in db[toChain]) {
-            if ("recipientLockId" in db[toChain][strRecipientLockId]
-                && db[toChain][strRecipientLockId]["recipientLockId"] === strLockId
-                && "recipient" in db[toChain][strRecipientLockId]
-                && db[toChain][strRecipientLockId]["recipient"] === db[fromChain][strLockId]["owner"]) {
-                const hash = await contract.hash(lockId, "EXECUTE");
-                const signature = await signer.signMessage(ethers.getBytes(hash));
-
-                const r = signature.slice(0, 66);
-                const s = '0x' + signature.slice(66, 130);
-                const v = '0x' + signature.slice(130, 132);
-
-                if (!(fromChain in executeKeys)) {
-                    executeKeys[fromChain] = {};
-                }
-                executeKeys[fromChain][strLockId] = {};
-                executeKeys[fromChain][strLockId]['v'] = v;
-                executeKeys[fromChain][strLockId]['r'] = r;
-                executeKeys[fromChain][strLockId]['s'] = s;
-
-                if (!(toChain in executeKeys)) {
-                    executeKeys[toChain] = {};
-                }
-                executeKeys[toChain][strRecipientLockId] = {};
-                executeKeys[toChain][strRecipientLockId]['v'] = v;
-                executeKeys[toChain][strRecipientLockId]['r'] = r;
-                executeKeys[toChain][strRecipientLockId]['s'] = s;
-
-                // delete db[fromChain][strLockId];
-                // delete db[toChain][strRecipientLockId];
-                console.log("[ Execute Keys ]");
-                console.log(executeKeys);
-            }
-        }
-    });
-
-    contract.on("Executed", (lockId) => {
-        // const strLockId = lockId.toString();
-
-        // delete executeKeys[fromChain][strLockId];
-    });
-
-    contract.on("RequestCancel", async (lockId) => {
-        const strLockId = lockId.toString();
-        const toChain = db[fromChain][strLockId]["toChain"];
-        const strRecipientLockId = db[fromChain][strLockId]["recipientLockId"];
-
-        // 실행키가 이미 배포된 경우 취소키를 배포하지 않고 반환
-        if (fromChain in executeKeys && strLockId in executeKeys[fromChain]) {
-            return;
-        }
-
+    // 상대방이 recipient를 지정하지 않았거나, recipient가 취소를 요청한 사용자가 아닌 경우에만 sign 발행
+    if (toChainRecipient === ethers.ZeroAddress || toChainRecipient !== owner) {
         const hash = await contract.hash(lockId, "CANCEL");
         const signature = await signer.signMessage(ethers.getBytes(hash));
 
@@ -109,38 +77,94 @@ const createEventHandler = async (rpcUrl, contractAddr) => {
         const s = '0x' + signature.slice(66, 130);
         const v = '0x' + signature.slice(130, 132);
 
-        if (!(fromChain in cancleKeys)) {
-            cancleKeys[fromChain] = {};
+        res.json({
+            hash: hash,
+            r: r,
+            s: s,
+            v: v
+        });
+        return;
+    } else {
+        const response = {
+            error: true,
+            reason: "Aready done"
+        };
+        res.json(response);
+        return;
+    }
+})
+
+app.get('/requestExecute', async (req, res) => {
+    const chainId = Number(req.query.chain_id)
+    const lockId = Number(req.query.lock_id);
+
+    const provider = providers[chainId];
+    const contract = new ethers.Contract(contractAddresses[chainId], ABI, provider);
+
+    // recipient를 지정했는지 확인
+    const [recipient, recipientLockId] = await contract.recipients(lockId);
+    if (recipient === ethers.ZeroAddress) {
+        const response = {
+            error: true,
+            reason: "setRecipient() first"
+        };
+        res.json(response);
+        return;
+    }
+
+    // 현재 위치한 체인에서 취소하려는 Lock에 대한 정보를 읽음
+    const [
+        owner, toChainId,
+        payToken, payTokenAmount,
+        buyToken, buyTokenAmount,
+        executed, cancelled
+    ] = await contract.locks(lockId);
+
+    const toChainProvider = providers[Number(toChainId)];
+    const toChainContract = new ethers.Contract(contractAddresses[Number(toChainId)], ABI, toChainProvider);
+    const [toChainRecipient, toChainRecipientLockId] = await toChainContract.recipients(Number(recipientLockId));
+
+    console.log(toChainRecipientLockId);
+    console.log(toChainRecipient);
+    console.log(owner);
+
+    // 상대방도 나를 recipient로 지정했는지 확인
+    if (toChainRecipient === owner) {
+        // 상대방이 취소하기 위해 requestCancel()를 호출했는지 확인
+        const isRequestCancel = await toChainContract.isRequestCancel(toChainRecipientLockId);
+        if (isRequestCancel === true) {
+            const response = {
+                error: true,
+                reason: "It's not executable because it's already cancelled"
+            };
+            res.json(response);
+            return;
+        } else {
+            const hash = await contract.hash(lockId, "EXECUTE");
+            const signature = await signer.signMessage(ethers.getBytes(hash));
+
+            const r = signature.slice(0, 66);
+            const s = '0x' + signature.slice(66, 130);
+            const v = '0x' + signature.slice(130, 132);
+
+            res.json({
+                hash: hash,
+                r: r,
+                s: s,
+                v: v
+            });
+            return;
         }
-        cancleKeys[fromChain][strLockId] = {};
-        cancleKeys[fromChain][strLockId]['v'] = v;
-        cancleKeys[fromChain][strLockId]['r'] = r;
-        cancleKeys[fromChain][strLockId]['s'] = s;
+    } else {
+        const response = {
+            error: true,
+            reason: "It's not executable"
+        };
+        res.json(response);
+        return;
+    }
+})
 
-        if (!(toChain in cancleKeys)) {
-            cancleKeys[toChain] = {};
-        }
-        cancleKeys[toChain][strRecipientLockId] = {};
-        cancleKeys[toChain][strRecipientLockId]['v'] = v;
-        cancleKeys[toChain][strRecipientLockId]['r'] = r;
-        cancleKeys[toChain][strRecipientLockId]['s'] = s;
-
-        console.log("[ Cancel Keys ]");
-        console.log(cancleKeys);
-
-        // delete db[fromChain][strLockId];
-        // delete db[toChain][strRecipientLockId];
-    });
-
-    contract.on("Canceled", (lockId) => {
-        // const strLockId = lockId.toString();
-
-        // delete cancleKeys[fromChain][strLockId];
-    });
-}
-
-(() => {
-    createEventHandler(process.env.ETHEREUM_RPC_SERVER, process.env.ETHEREUM_CONTRACT_ADDRESS);
-    // createEventHandler(process.env.POLYGON_RPC_SERVER, process.env.POLYGON_RPC_SERVER);
-    // createEventHandler(process.env.AVALANCHE_RPC_SERVER, process.env.AVALANCHE_RPC_SERVER);
-})();
+app.listen(port, () => {
+    console.log(`BlueBird Notary ${port}`)
+})
