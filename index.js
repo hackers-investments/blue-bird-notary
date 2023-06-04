@@ -14,7 +14,7 @@ const contractAddresses = {
 const providers = {
     0: new ethers.JsonRpcProvider("https://mainnet.infura.io/v3/f95fcbaa5a2f42b580019e13527c4566"), // Ethereum mainnet
     5: new ethers.JsonRpcProvider("https://goerli.infura.io/v3/f95fcbaa5a2f42b580019e13527c4566"), // Goerli testnet
-    137: new ethers.JsonRpcProvider("https://polygon-mumbai.infura.io/v3/f95fcbaa5a2f42b580019e13527c4566"), // Polygon mainnet
+    137: new ethers.JsonRpcProvider("https://polygon-mainnet.infura.io/v3/f95fcbaa5a2f42b580019e13527c4566"), // Polygon mainnet
 };
 
 // personal_sign()을 호출하기 위한 signer, 네트워크는 어디에 연결하든 상관없음
