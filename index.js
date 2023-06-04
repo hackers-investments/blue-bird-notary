@@ -60,11 +60,11 @@ app.get('/requestCancel', async (req, res) => {
     const toChainProvider = providers[Number(toChainId)];
     const toChainContract = new ethers.Contract(contractAddresses[Number(toChainId)], ABI, toChainProvider);
     // 반대편 체인에서 취소하려는 Lock에 대한 정보를 읽음
-    const [, , , toChainRecipient, toChainRecipientLockId,] = await toChainContract.getLockInfo(Number(recipientLockId));
+    const [, , toChainRecipient, toChainRecipientLockId,] = await toChainContract.getLockInfo(Number(recipientLockId));
 
     // 상대방이 recipient를 지정하지 않았거나, recipient가 취소를 요청한 사용자가 아닌 경우에만 sign 발행
     if (toChainRecipient === ethers.ZeroAddress || toChainRecipient !== owner || Number(toChainRecipientLockId) !== lockId) {
-        const hash = await contract.hash(lockId, "CANCEL");
+        const hash = await fromChainContract.hash(lockId, "CANCEL");
         const signature = await signer.signMessage(ethers.getBytes(hash));
 
         const r = signature.slice(0, 66);
@@ -72,7 +72,7 @@ app.get('/requestCancel', async (req, res) => {
         const v = '0x' + signature.slice(130, 132);
 
         res.json({
-            hash: hash,
+            digest: hash,
             r: r,
             s: s,
             v: v
@@ -118,7 +118,10 @@ app.get('/requestExecute', async (req, res) => {
 
     const toChainProvider = providers[Number(toChainId)];
     const toChainContract = new ethers.Contract(contractAddresses[Number(toChainId)], ABI, toChainProvider);
-    const [, , , toChainRecipient, toChainRecipientLockId, toChainIsRequestCancel] = await toChainContract.getLockInfo(Number(recipientLockId));
+    const [, , toChainRecipient, toChainRecipientLockId, toChainIsRequestCancel] = await toChainContract.getLockInfo(Number(recipientLockId));
+
+console.log(toChainRecipient);
+	console.log(owner);
 
     // 상대방도 나를 recipient로 지정했는지 확인
     if (toChainRecipient === owner) {
@@ -131,7 +134,7 @@ app.get('/requestExecute', async (req, res) => {
             res.json(response);
             return;
         } else {
-            const hash = await contract.hash(lockId, "EXECUTE");
+            const hash = await fromChainContract.hash(lockId, "EXECUTE");
             const signature = await signer.signMessage(ethers.getBytes(hash));
 
             const r = signature.slice(0, 66);
@@ -139,7 +142,7 @@ app.get('/requestExecute', async (req, res) => {
             const v = '0x' + signature.slice(130, 132);
 
             res.json({
-                hash: hash,
+                digest: hash,
                 r: r,
                 s: s,
                 v: v
